@@ -86,6 +86,7 @@ _DISCORD_NONCONVERSATIONAL_STATE_FILENAME = "discord_nonconversational_messages.
 
 _DISCORD_COMMAND_SYNC_MUTATION_INTERVAL_SECONDS = 4.5
 _DISCORD_COMMAND_SYNC_MAX_RATE_LIMIT_SLEEP_SECONDS = 30.0
+_DISCORD_AUTO_THREAD_MAX_RATE_LIMIT_WAIT_SECONDS = 600.0
 # Discord caps global slash commands at 100/app; exceeding it fails the ENTIRE sync (error 30032).
 _DISCORD_MAX_APP_COMMANDS = 100
 # Native slash commands (registered before COMMAND_REGISTRY/plugins so they survive the 100 cap):
@@ -2127,13 +2128,8 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
                 logger.info("[%s] Skipping Discord slash command sync: %s", self.name, skip_reason)
                 return
             self._record_command_sync_attempt(app_id, fingerprint)
-            http = getattr(self._client, "http", None)
-            has_ratelimit_timeout = http is not None and hasattr(http, "max_ratelimit_timeout")
-            previous_ratelimit_timeout = getattr(http, "max_ratelimit_timeout", None) if has_ratelimit_timeout else None
-            if has_ratelimit_timeout:
-                http.max_ratelimit_timeout = _DISCORD_COMMAND_SYNC_MAX_RATE_LIMIT_SLEEP_SECONDS
             try:
-                # The command-management bucket is small and discord.py may sleep long on a 429: bound it.
+                # Bound sync without changing the shared HTTP policy used by thread creation.
                 summary = await asyncio.wait_for(self._safe_sync_slash_commands(), timeout=600)
             except Exception as e:
                 if not self._is_discord_rate_limit(e):
@@ -2148,9 +2144,6 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
                     retry_after,
                 )
                 return
-            finally:
-                if has_ratelimit_timeout:
-                    http.max_ratelimit_timeout = previous_ratelimit_timeout
             self._record_command_sync_success(app_id, fingerprint, summary)
             logger.info(
                 "[%s] Safely reconciled %d slash command(s): unchanged=%d updated=%d recreated=%d created=%d deleted=%d",
@@ -5316,10 +5309,8 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
 
     async def _auto_create_thread(self, message: 'DiscordMessage') -> Optional[Any]:
         """Create an auto-thread from a user message; returns the thread or ``None``.
-        Primary path and seed-message fallback each retry once after a short backoff (transient errors).
-
-        ``Cannot connect to host discord.com:443``) don't immediately burn through to the caller's failure
-        path (#20243).
+        Retry Discord 429s once after its cooldown, without a seed-message fallback that
+        hits the same rate-limit bucket. Other transient failures retain the short retry.
         """
         thread_name = self._derive_auto_thread_name(message.content or "")
         display_name = getattr(getattr(message, "author", None), "display_name", None) or "unknown user"
@@ -5332,6 +5323,21 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
                 return self._stamp_auto_thread_name(thread, thread_name)
             except Exception as direct_error:
                 last_direct_error = direct_error
+                if self._is_discord_rate_limit(direct_error):
+                    retry_after = self._extract_discord_retry_after(direct_error)
+                    if (
+                        attempt == 0
+                        and retry_after is not None
+                        and retry_after <= _DISCORD_AUTO_THREAD_MAX_RATE_LIMIT_WAIT_SECONDS
+                    ):
+                        logger.info(
+                            "[%s] Discord rate-limited auto-thread creation; retrying in %.2fs",
+                            self.name,
+                            retry_after,
+                        )
+                        await asyncio.sleep(retry_after)
+                        continue
+                    break
                 try:
                     seed_msg = await message.channel.send(
                         f"\U0001f9f5 Thread created by Hermes: **{thread_name}**"
@@ -5341,8 +5347,25 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
                 except Exception as fallback_error:
                     last_fallback_error = fallback_error
                     if attempt == 0:
-                        # Brief backoff: most failures here are transient connect errors.
-                        await asyncio.sleep(0.75)
+                        retry_after = (
+                            self._extract_discord_retry_after(fallback_error)
+                            if self._is_discord_rate_limit(fallback_error)
+                            else None
+                        )
+                        if (
+                            retry_after is not None
+                            and retry_after <= _DISCORD_AUTO_THREAD_MAX_RATE_LIMIT_WAIT_SECONDS
+                        ):
+                            logger.info(
+                                "[%s] Discord rate-limited auto-thread fallback; retrying in %.2fs",
+                                self.name,
+                                retry_after,
+                            )
+                            await asyncio.sleep(retry_after)
+                        elif self._is_discord_rate_limit(fallback_error):
+                            break
+                        else:
+                            await asyncio.sleep(0.75)
                         continue
         logger.warning(
             "[%s] Auto-thread creation failed after retry. Direct error: %s. Fallback error: %s",

@@ -531,6 +531,40 @@ async def test_post_connect_initialization_retries_fingerprint_after_timeout(tmp
 
 
 @pytest.mark.asyncio
+async def test_post_connect_initialization_does_not_change_shared_http_rate_limit(tmp_path, monkeypatch):
+    """Slash sync must not change the HTTP policy used by thread creation."""
+    adapter = DiscordAdapter(PlatformConfig(enabled=True, token="test-token"))
+    monkeypatch.setattr("hermes_constants.get_hermes_home", lambda: tmp_path)
+
+    http = SimpleNamespace(max_ratelimit_timeout=None)
+    adapter._client = SimpleNamespace(
+        tree=SimpleNamespace(get_commands=lambda: []),
+        http=http,
+        application_id=999,
+        user=SimpleNamespace(id=999),
+    )
+    observed = []
+
+    async def sync():
+        observed.append(http.max_ratelimit_timeout)
+        return {
+            "total": 0,
+            "unchanged": 0,
+            "updated": 0,
+            "recreated": 0,
+            "created": 0,
+            "deleted": 0,
+        }
+
+    monkeypatch.setattr(adapter, "_safe_sync_slash_commands", sync)
+
+    await adapter._run_post_connect_initialization()
+
+    assert observed == [None]
+    assert http.max_ratelimit_timeout is None
+
+
+@pytest.mark.asyncio
 async def test_safe_sync_reads_permission_attrs_from_existing_command():
     """Regression: AppCommand.to_dict() in discord.py does NOT include
     nsfw, dm_permission, or default_member_permissions — they live only

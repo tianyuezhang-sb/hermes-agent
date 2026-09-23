@@ -428,6 +428,35 @@ async def test_auto_create_thread_strips_mention_syntax_from_name(adapter):
 
 
 @pytest.mark.asyncio
+async def test_auto_create_thread_waits_for_rate_limit_without_seed_fallback(adapter):
+    """A direct-create 429 must wait for Discord instead of creating junk."""
+
+    class FakeRateLimit(Exception):
+        def __init__(self, retry_after):
+            super().__init__("rate limited")
+            self.retry_after = retry_after
+
+    thread = SimpleNamespace(id=999, name="help")
+    message = SimpleNamespace(
+        content="please help",
+        create_thread=AsyncMock(side_effect=[FakeRateLimit(272.69), thread]),
+        channel=SimpleNamespace(send=AsyncMock()),
+        author=SimpleNamespace(display_name="Jezza"),
+    )
+
+    with patch(
+        "plugins.platforms.discord.adapter.asyncio.sleep",
+        new_callable=AsyncMock,
+    ) as sleep:
+        result = await adapter._auto_create_thread(message)
+
+    assert result is thread
+    assert message.create_thread.await_count == 2
+    message.channel.send.assert_not_awaited()
+    sleep.assert_awaited_once_with(272.69)
+
+
+@pytest.mark.asyncio
 async def test_rename_thread_edits_only_when_current_name_matches(adapter):
     thread = SimpleNamespace(
         id=999,
