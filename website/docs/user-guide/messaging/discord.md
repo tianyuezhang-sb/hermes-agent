@@ -774,6 +774,8 @@ The buttons disable themselves once a choice is made so duplicate clicks don't d
 
 Interactive prompts (command approvals, `clarify` questions, and slash-command confirmations) share one layout: the **plain message** carries the full payload — the command and why it was flagged plus the approval deadline, or the question and reply hint — the **embed card** underneath is a header only, and the buttons sit below the card. Everything you need to decide is in the plain text, so the prompt reads correctly on clients that hide or detach embeds, and nothing is shown twice on clients that render them.
 
+Command approval buttons use `approvals.timeout`, matching the deadline shown in the message and the agent's approval wait. For example, `approvals.timeout: 1800` keeps both the buttons and the approval request available for 30 minutes. `approvals.discord_prompt_timeout` controls other interactive prompts and does not shorten command approvals.
+
 ## Home Channel
 
 You can designate a "home channel" where the bot sends proactive messages (such as cron job output, reminders, and notifications). There are two ways to set it:
@@ -983,5 +985,4 @@ Leave `everyone` and `roles` at `false` unless you know exactly why you need the
 :::
 
 For more information on securing your Hermes Agent deployment, see the [Security Guide](../security.md).
-
 

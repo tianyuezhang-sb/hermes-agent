@@ -1,6 +1,6 @@
 """Tests for the configurable Discord interactive-view timeout.
 
-Previously hardcoded to 300s on ExecApprovalView, SlashConfirmView,
+Previously hardcoded to 300s on SlashConfirmView,
 UpdatePromptView, and ClarifyChoiceView. Now reads
 ``approvals.discord_prompt_timeout`` with the same 300s default, clamped to
 ``[_DISCORD_PROMPT_TIMEOUT_MIN, _DISCORD_PROMPT_TIMEOUT_MAX]`` so a typo
@@ -84,7 +84,6 @@ def test_value_clamped_to_minimum(monkeypatch):
     """A typo of e.g. 5 seconds must not make prompts disappear."""
     _patch_config(monkeypatch, {"approvals": {"discord_prompt_timeout": 5}})
     assert _read_discord_prompt_timeout() == _DISCORD_PROMPT_TIMEOUT_MIN
-
 
 
 

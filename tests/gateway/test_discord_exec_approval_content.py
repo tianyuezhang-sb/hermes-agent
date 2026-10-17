@@ -4,6 +4,7 @@ from unittest.mock import AsyncMock
 import pytest
 
 from gateway.config import PlatformConfig
+from gateway.platforms.base_exec_approval import format_approval_window
 from plugins.platforms.discord.adapter import DiscordAdapter
 
 
@@ -20,6 +21,33 @@ def _capture_channel(adapter):
         fetch_channel=AsyncMock(),
     )
     return sent
+
+
+@pytest.mark.asyncio
+async def test_exec_approval_buttons_match_advertised_timeout_across_profiles(tmp_path, monkeypatch):
+    """The buttons remain usable for the approval gate's full advertised window."""
+    homes = []
+    for name, seconds in (("a", 1800), ("b", 120)):
+        home = tmp_path / name
+        home.mkdir()
+        (home / "config.yaml").write_text(
+            f"approvals:\n  timeout: {seconds}\n  discord_prompt_timeout: 30\n",
+        )
+        homes.append((home, seconds))
+
+    for home, seconds in (*homes, homes[0]):
+        monkeypatch.setenv("HERMES_HOME", str(home))
+        adapter = DiscordAdapter(PlatformConfig(enabled=True, token="***"))
+        sent = _capture_channel(adapter)
+
+        result = await adapter.send_exec_approval(
+            chat_id="555", command="make deploy", session_key="discord:555",
+            description="deployment",
+        )
+
+        assert result.success is True
+        assert f"within {format_approval_window(seconds)}" in sent["content"]
+        assert sent["view"].timeout == seconds
 
 
 @pytest.mark.asyncio
